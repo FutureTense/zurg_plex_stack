@@ -1,0 +1,271 @@
+networks:
+  default:
+    driver: bridge
+
+services:
+
+  pd_zurg:
+    container_name: pd_zurg
+    image: ${PD_ZURG_IMAGE}
+    stdin_open: true # docker run -i
+    tty: true        # docker run -t    
+    volumes:
+      - ${APPDIR}/pd_zurg/config:/config
+      - ${APPDIR}/pd_zurg/log:/log
+      - ${APPDIR}/pd_zurg/cache:/cache
+      - ${APPDIR}/pd_zurg/RD:/zurg/RD
+      - ${APPDIR}/pd_zurg/mnt:/data:rshared
+    environment:
+      - SHOW_MENU=${SHOW_MENU}
+      - TZ=${TZ}
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - ZURG_USER=${ZURG_USER}
+      - ZURG_PASS=${ZURG_PASS}
+      - ZURG_ENABLED=${ZURG_ENABLED}
+      - ZURG_VERSION=${ZURG_VERSION}
+      - RD_API_KEY=${RD_API_KEY}
+      - ZURG_UPDATE=${ZURG_UPDATE}
+      - ZURG_PORT=${ZURG_PORT}
+      - PLEX_REFRESH=${PLEX_REFRESH}
+      - PLEX_MOUNT_DIR=${PLEX_MOUNT_DIR}
+      - RCLONE_MOUNT_NAME=${RCLONE_MOUNT_NAME}
+      - PD_ENABLED=${PD_ENABLED}
+      - PLEX_USER=${PLEX_USER}
+      - PLEX_TOKEN=${PLEX_TOKEN}
+      - PLEX_ADDRESS=http://${SERVER_IP}:32400
+      # - PLEX_ADDRESS=${PLEX_ADDRESS}
+      - PDZURG_LOG_LEVEL=DEBUG #DEBUG #INFO
+    ports:
+      - ${ZURG_PORT}:${ZURG_PORT}
+    devices:
+      - /dev/fuse:/dev/fuse:rwm
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+      - no-new-privileges
+    logging:
+      driver: "json-file"
+      options:
+          max-size: "100m"
+          max-file: "1"
+
+  plex:
+    image: plexinc/pms-docker:latest
+    container_name: plex
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - ${APPDIR}/plex/library:/config
+      - ${APPDIR}/plex/transcode:/transcode
+      - ${APPDIR}/plex/media:/data
+      - ${APPDIR}/pd_zurg/mnt/pd_zurg/:/rclone
+      - ${HOME}/media:/localmedia
+    environment:
+      - VERSION=docker
+      - HOSTNAME=${HOSTNAME}
+      - ADVERTISE_IP="http://${SERVER_IP}:32400" #${PLEX_ADDRESS}
+      - TZ=${TZ}
+      - PLEX_CLAIM=${PLEX_CLAIM}
+      - PLEX_UID=${PUID}
+      - PLEX_GID=${PGID}
+      - PUID=${PUID}
+      - PGID=${PGID}
+    ports:
+      - 3005:3005/tcp
+      - 8324:8324/tcp
+      - 32400:32400/tcp
+      - 33400:33400/tcp
+      - 32469:32469/tcp
+      # TCP 3005,8324,32400,32469,33400
+      - 1900:1900/udp
+      - 32410:32410/udp
+      - 32412:32412/udp
+      - 32413:32413/udp
+      - 32414:32414/udp
+    networks:
+      - default
+      # UDP 1900,32410,32412,32413,32414
+    healthcheck:
+      test: curl --connect-timeout 15 --silent --show-error --fail http://${SERVER_IP}:32400/identity
+      interval: 1m00s
+      timeout: 15s
+      retries: 3
+      start_period: 1m00s
+    restart: unless-stopped
+    depends_on:
+      pd_zurg:
+        condition: service_healthy
+
+  sonarr:
+    container_name: sonarr
+    image: linuxserver/sonarr:latest
+    restart: unless-stopped
+    depends_on:
+      - prowlarr
+    environment:
+      - TZ=${TZ}
+      - PUID=${PUID}
+      - PGID=${PGID}
+    ports:
+      - 8989:8989
+    networks:
+      - default
+    volumes:
+      - ${APPDIR}/sonarr/config:/config
+      - ${APPDIR}/pd_zurg/mnt/pd_zurg/:/rclone
+      - ${APPDIR}/rdtclient/data/downloads/:/data/downloads
+
+  radarr:
+    container_name: radarr
+    image: linuxserver/radarr:latest
+    restart: unless-stopped
+    depends_on:
+      - prowlarr
+    ports:
+      - 7878:7878
+    environment:
+      - TZ=${TZ}
+      - PUID=${PUID}
+      - PGID=${PGID}
+    networks:
+      - default
+    volumes:
+      - ${APPDIR}/radarr/config:/config
+      - ${APPDIR}/pd_zurg/mnt/pd_zurg/:/rclone
+      - ${APPDIR}/rdtclient/data/downloads/:/data/downloads
+
+  rdtclient:
+    image: rogerfar/rdtclient
+    container_name: rdtclient
+    environment:
+     - TZ=${TZ}
+     - PUID=${PUID}
+     - PGID=${PGID}
+    volumes:
+      - ${APPDIR}/rdtclient/config:/config
+      - ${APPDIR}/rdtclient/data/downloads:/data/downloads
+      - ${APPDIR}/rdtclient/data/db:/data/db
+      - ${APPDIR}/rdtclient/data/torrents/:/torrents
+    restart: always
+    logging:
+        driver: json-file
+        options:
+            max-size: 10m
+    ports:
+        - '6500:6500'
+    healthcheck:
+        test: curl --fail http://${SERVER_IP}:6500 || exit 1
+        interval: 30s
+        retries: 3
+        start_period: 30s
+        timeout: 30s
+
+  prowlarr:
+    image: ghcr.io/linuxserver/prowlarr:develop
+    container_name: prowlarr
+    environment:
+     - TZ=${TZ}
+     - PUID=${PUID}
+     - PGID=${PGID}
+    volumes:
+      - ${APPDIR}/prowlarr/config:/config
+      - ${HOME}/medialib:/medialib
+    ports:
+     - 9696:9696
+    networks:
+      - default
+    restart: unless-stopped
+
+  flaresolverr:
+    # DockerHub mirror flaresolverr/flaresolverr:latest
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_HTML=${LOG_HTML:-false}
+      - CAPTCHA_SOLVER=${CAPTCHA_SOLVER:-none}
+      - TZ=America/New_York
+    ports:
+      - "${PORT:-8191}:8191"
+    restart: unless-stopped
+
+  cloud9: #creates cloud9 editor
+    image:  lscr.io/linuxserver/cloud9:latest
+    container_name: cloud9
+    restart: unless-stopped
+    ports:
+      - 8000:8000
+    environment:
+      - TZ=${TZ}
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - C9_WORKSPACE=/workspace
+      - USERNAME=${C9USER}
+      - PASSWORD=${C9PASSWORD}
+    volumes:
+      - ${APPDIR}/cloud9/config:/config
+      - ${HOME}:/code
+
+  code-server: #creates code-server.example.com editor
+    image: lscr.io/linuxserver/code-server:latest
+    container_name: code-server
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - PASSWORD=${VSCODE_PASSWORD} #optional
+      - SUDO_PASSWORD=${VSCODE_SUDO_PASSWORD} #optional
+      - DEFAULT_WORKSPACE=/config/workspace #optional
+#      - PORT=8443
+      - PORT=3000
+    volumes:
+      - ${APPDIR}/code-server:/config
+      - ${HOME}:/home-ws
+    ports:
+      - 8443:8443
+      - 3000:3000
+    restart: unless-stopped
+
+  wg-easy:
+    environment:
+      # ⚠️ Required:
+      # Change this to your host's public address
+      - WG_HOST=${DOMAINNAME}
+      # Optional:
+      - PASSWORD=${WIREGUARD_PASSWORD}
+      # - WG_PORT=51820
+      # - WG_DEFAULT_ADDRESS=10.8.0.x
+      - WG_DEFAULT_DNS=172.16.68.1
+      # - WG_ALLOWED_IPS=192.168.15.0/24, 10.0.1.0/24
+    image: weejewel/wg-easy
+    container_name: wg-easy
+    volumes:
+      - ${USERDIR}/stacks/network/wireguard:/etc/wireguard
+    ports:
+      - "51820:51820/udp"
+      - "51821:51821/tcp"
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+
+  portainer:
+    image: portainer/portainer:latest
+    container_name: portainer
+    restart: always
+    command: -H unix:///var/run/docker.sock
+    ports:
+      - 9000:9000
+    volumes:
+      - ${APPDIR}/portainer:/data
+      # - ${HOME}/stacks/portainer/data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - TZ=${TZ}
+
+
